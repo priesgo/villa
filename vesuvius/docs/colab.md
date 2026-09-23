@@ -249,6 +249,30 @@ Two more things worth checking:
 
   or just check the folder in the Google Drive web UI — that's ground truth regardless of whether the Colab session that ran the sync still exists.
 
+## 7. Reading input data: Google Drive vs. public S3
+
+For datasets already published to the [Vesuvius Challenge open-data S3 bucket](https://vesuvius-challenge-open-data.s3.us-east-1.amazonaws.com/index.html), `vesuvius`'s `ink_detection` data layer can read directly from `s3://` at training time — no download, no sync, no local copy — as an alternative to mounting Drive and syncing the dataset there first. This only applies to data actually published on that bucket; your own private data (and all training *outputs* — checkpoints, logs, run configs) still needs Drive or another writable store, since the bucket is read-only to you.
+
+### Data read-speed results (2026-09-22)
+
+Measured from inside a live Colab session (T4), reading real files from each source:
+
+| Source | File | Size | Time | Throughput |
+| --- | --- | --- | --- | --- |
+| S3 (anonymous, direct HTTP GET) | `PHerc0139/.../ink-detection/*.tif` | 40.8 MB | 1.35s | **~30 MB/s** |
+| Google Drive (`rclone`, direct API, no FUSE mount) | segment `x.tif` | 66.7 MB | 6.07s | **~11 MB/s** |
+
+S3 was ~2.7x faster than Drive in this comparison, and both are far faster than the same reads from a residential/local-machine connection (~0.5 MB/s measured against the same files) — the point of this comparison is Colab-to-cloud-storage speed specifically, not a general claim about S3 vs. Drive.
+
+### Enabling it: fully-explicit dataset entries
+
+`DatasetSource` (in `src/vesuvius/ink_detection/config.py`) supports a fully-explicit mode that skips local directory discovery entirely: give it `segment_names` plus `surface_volume_paths`, `inklabels_paths`, and `supervision_mask_paths` — each an `{segment_name: path}` map, where `path` can be `s3://...`, `https://...`, or a local path. `segments_path` is still required by the config schema but is never touched in this mode (safe to set to any placeholder value). See [`configs/ink_tutorial_s3_test.json`](../configs/ink_tutorial_s3_test.json) for a working example against a real published segment (confirmed: 2,611 patches discovered and a 100-iteration training smoke test completed successfully reading only from S3).
+
+Two things worth knowing if you point this at S3 data:
+
+- **Anonymous access only works for the specific bucket substring `vesuvius-challenge-open-data`** — this is a hardcoded allowlist in `volume_io.py`'s `open_volume_root`, not a generic "any public S3 bucket" credential-free path.
+- **Some published segments store `supervision`/`inklabels` as a single unchunked flat 2D array** (no z-stack, unlike the 3D z-stack convention this pipeline otherwise assumes) — the data layer now handles both automatically. If a segment's labels are one big unchunked blob, also set `volume_cache_dir`/`volume_cache_max_gb` in the config (an existing generic disk-cache layer) so the label array is fetched from S3 once and served from local disk on every subsequent patch read, instead of re-fetching the whole blob on every dataloader sample — this was the difference between a training step taking ~2.4s and the process appearing to hang indefinitely.
+
 ## Troubleshooting: console appears stuck during installs
 
 `colab console -s <name>` proxies a shell over a network connection, and that connection can stall or silently drop while a long install (`install_build_deps.sh` compiling Qt6/OpenCV/CGAL/Ceres, or `uv sync --extra models` pulling `torch`, `cucim-cu13`, `nnunetv2`, and their dependency trees) is still running in the foreground. When that happens the console looks frozen, and if the connection actually re-attaches, whatever was running in the plain foreground shell is killed along with it.
