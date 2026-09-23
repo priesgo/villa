@@ -72,8 +72,19 @@ PATCH_FILES=(
 VESUVIUS_LOCAL_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 latest_checkpoint() {
-    rclone lsl --config "$RCLONE_CONF_LOCAL" "google_drive:vesuvius/runs/$RUN_NAME/" 2>/dev/null \
-        | grep 'ckpt_' | sort -k2,3 | tail -1 | awk '{print $NF}'
+    # Sort by filename, not by mtime: checkpoint numbers are zero-padded, so
+    # plain lexicographic sort on "ckpt_NNNNNN.pth" is equivalent to numeric
+    # sort by iteration and is the only correct definition of "latest" here.
+    # Sorting by mtime (the previous implementation) breaks the moment two
+    # training processes are ever writing to the same out_dir concurrently —
+    # observed live: a presumed-dead session turned out to still be alive,
+    # training from its own earlier resume point, and rewrote a lower-
+    # numbered checkpoint (ckpt_009000.pth) with a newer timestamp than the
+    # real latest one (ckpt_010000.pth). An mtime sort would have handed that
+    # stale, lower checkpoint back as "latest" on the next resume, silently
+    # discarding 1000 real iterations of progress.
+    rclone lsf --config "$RCLONE_CONF_LOCAL" "google_drive:vesuvius/runs/$RUN_NAME/" 2>/dev/null \
+        | grep '^ckpt_' | sort | tail -1
 }
 
 checkpoint_iter() {
