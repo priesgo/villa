@@ -168,7 +168,16 @@ disown
         fi
         now=$(date +%s)
         if (( now - last_progress >= STALL_TIMEOUT )); then
-            log "no new checkpoint in ${STALL_TIMEOUT}s — treating session '$SESSION' as dead, resuming on a new one"
+            # Deliberately does NOT auto-stop "$SESSION" here: the stall
+            # heuristic (no new checkpoint within STALL_TIMEOUT) has been
+            # observed to false-positive on a session that was merely slow or
+            # unresponsive to colab exec while still training correctly
+            # underneath — auto-stopping on that verdict would actively kill
+            # real, confirmed progress, which is worse than the cost of
+            # leaving a possibly-still-alive session running. The tradeoff is
+            # accepted: a truly-dead session's slot may sit unstopped for a
+            # while, but a merely-slow one is never killed by this script.
+            log "no new checkpoint in ${STALL_TIMEOUT}s — resuming on a new session. NOTE: '$SESSION' is presumed dead but was not stopped, since that verdict has been wrong before (a session can look stalled for a long time yet still be training). Check 'colab sessions' / the Colab billing dashboard and stop it manually once you've confirmed it's not still making progress."
             break
         fi
     done
