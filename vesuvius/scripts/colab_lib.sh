@@ -74,3 +74,48 @@ remote_bash() {
     check_exec_rc "$rc" "$out" "$secs"
     check_remote_ok "$out"
 }
+
+# Launches a detached background loop on the session that keeps a zarr
+# volume_cache_dir (an S3 chunk cache — see docs/ink_detection.md "Volume
+# paths and disk cache") under a total size bound for as long as training
+# runs, not just at each volume's open time. Added after a long S3-backed
+# training run repeatedly died mid-run, correlated with steadily rising disk
+# usage (W&B system/disk./.usageGB) that tracked Colab's ~70-100GB session
+# disk quota. volume_cache_max_gb in the training config already bounds this
+# per-volume via zarr's own CacheStore LRU, but that budget is enforced
+# per-volume-per-process (independent accounting across dataloader workers
+# can overshoot it before the next prune sweep), so this is a coarser,
+# total-size safety net on top of it — deliberately conservative about what
+# it touches:
+#   - Only ever operates inside $1 (the cache directory itself), never Drive
+#     or S3 — this cache is purely local and re-fetchable, so removing an
+#     entry just means the next read is a cache miss instead of a hit.
+#   - Only considers files with no access in the last 2 minutes (`-amin +2`),
+#     to avoid racing a read that's actively in flight.
+#   - Deletes oldest-accessed-first, stopping as soon as it's back under
+#     budget, so it never over-prunes.
+# Requires $SESSION set.
+launch_disk_janitor() {
+    local cache_dir="$1" max_gb="${2:-8}"
+    remote_bash "
+nohup bash -c '
+CACHE_DIR=\"$cache_dir\"
+MAX_BYTES=\$(( $max_gb * 1024 * 1024 * 1024 ))
+while true; do
+  if [ -d \"\$CACHE_DIR\" ]; then
+    total=\$(du -sb \"\$CACHE_DIR\" 2>/dev/null | cut -f1)
+    if [ -n \"\$total\" ] && [ \"\$total\" -gt \"\$MAX_BYTES\" ]; then
+      find \"\$CACHE_DIR\" -type f -amin +2 -printf \"%A@ %p\n\" 2>/dev/null | sort -n | while read -r _ path; do
+        cur=\$(du -sb \"\$CACHE_DIR\" 2>/dev/null | cut -f1)
+        [ -n \"\$cur\" ] && [ \"\$cur\" -le \"\$MAX_BYTES\" ] && break
+        rm -f \"\$path\"
+      done
+    fi
+  fi
+  sleep 120
+done
+' > /tmp/disk_janitor.log 2>&1 &
+disown
+echo \"disk janitor launched, pid \$!\"
+" 30
+}

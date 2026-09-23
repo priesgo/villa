@@ -1,0 +1,175 @@
+#!/usr/bin/env bash
+# Watches a detached colab_train.sh run for stalls (no new checkpoint within
+# STALL_TIMEOUT) and automatically resumes it on a fresh session, patching in
+# the local uncommitted/unpushed source files each time. Built live after a
+# single ink_tutorial_s3.json full-training run needed 4 manual resumes due to
+# recurring, undiagnosed `colab exec`/session-death reliability issues (see
+# docs/colab.md "colab exec reliability"). Ground truth for "is it alive" is
+# always a new checkpoint file landing on Drive, never the colab CLI's own
+# session-status reporting, which was repeatedly observed to be wrong in both
+# directions (false "session lost" while still training; true death not
+# always reflected promptly).
+#
+# Usage:
+#   REPO_URL=https://github.com/<you>/villa.git \
+#   RCLONE_CONF_LOCAL=~/.config/rclone/rclone_vesuvius.conf \
+#   CONFIG_LOCAL=../configs/ink_tutorial_s3.json \
+#   RUN_NAME=ink_tutorial_s3 \
+#   TARGET_ITERATIONS=20000 \
+#   ./colab_resume_watchdog.sh
+#
+# Env vars (all optional except REPO_URL, RCLONE_CONF_LOCAL, CONFIG_LOCAL):
+#   RUN_NAME            Basename used for out_dir/log naming   (default: derived from CONFIG_LOCAL)
+#   TARGET_ITERATIONS   Stop once a checkpoint >= this exists  (default: read from config's num_iterations)
+#   SAVE_EVERY          Expected checkpoint cadence, iters     (default: read from config's save_every)
+#   STEP_SECONDS        Expected wall-seconds per iteration     (default: 1.3, used only to size the stall timeout)
+#   STALL_GRACE         Extra seconds added on top of the expected per-checkpoint time (default: 900)
+#   SESSION_PREFIX      Colab session name prefix               (default: RUN_NAME)
+#   VESUVIUS_COLAB_GPU  GPU tier                                (default: l4)
+#   POLL_SECONDS        How often to check Drive for a new checkpoint (default: 60)
+#
+# All colab_bootstrap.sh env vars are passed through as-is.
+#
+# Modified source files under src/vesuvius/ink_detection/ are pushed to
+# Drive (google_drive:vesuvius/configs/<basename>.py) and pulled onto each
+# fresh session — the same manual pattern used throughout this session,
+# needed because these commits are not yet pushed to the remote the session
+# clones from. Remove PATCH_FILES (or this whole block) once they are.
+
+set -uo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=colab_lib.sh
+source "$SCRIPT_DIR/colab_lib.sh"
+
+REPO_URL="${REPO_URL:?Set REPO_URL}"
+RCLONE_CONF_LOCAL="${RCLONE_CONF_LOCAL:?Set RCLONE_CONF_LOCAL}"
+CONFIG_LOCAL="${CONFIG_LOCAL:?Set CONFIG_LOCAL}"
+[[ -f "$CONFIG_LOCAL" ]] || { echo "[watchdog] config not found: $CONFIG_LOCAL" >&2; exit 1; }
+
+RUN_NAME="${RUN_NAME:-$(basename "$CONFIG_LOCAL" .json)}"
+CONFIG_REMOTE="/content/drive/vesuvius/configs/$(basename "$CONFIG_LOCAL")"
+OUT_DIR_REMOTE="/content/drive/vesuvius/runs/$RUN_NAME"
+SESSION_PREFIX="${SESSION_PREFIX:-$RUN_NAME}"
+GPU="${VESUVIUS_COLAB_GPU:-l4}"
+POLL_SECONDS="${POLL_SECONDS:-60}"
+STEP_SECONDS="${STEP_SECONDS:-1.3}"
+STALL_GRACE="${STALL_GRACE:-900}"
+
+TARGET_ITERATIONS="${TARGET_ITERATIONS:-$(python3 -c "import json,sys; print(json.load(open(sys.argv[1])).get('num_iterations',0))" "$CONFIG_LOCAL")}"
+SAVE_EVERY="${SAVE_EVERY:-$(python3 -c "import json,sys; print(json.load(open(sys.argv[1])).get('save_every',1000))" "$CONFIG_LOCAL")}"
+STALL_TIMEOUT=$(python3 -c "print(int(float('$SAVE_EVERY') * float('$STEP_SECONDS') + float('$STALL_GRACE')))")
+
+log "target: $TARGET_ITERATIONS iterations, checkpoint every $SAVE_EVERY, stall timeout ${STALL_TIMEOUT}s"
+
+PATCH_FILES=(
+    "src/vesuvius/ink_detection/config.py"
+    "src/vesuvius/ink_detection/types.py"
+    "src/vesuvius/ink_detection/volume_io.py"
+    "src/vesuvius/ink_detection/data/segment.py"
+    "src/vesuvius/ink_detection/data/patch_finding_default.py"
+)
+VESUVIUS_LOCAL_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+latest_checkpoint() {
+    rclone lsl --config "$RCLONE_CONF_LOCAL" "google_drive:vesuvius/runs/$RUN_NAME/" 2>/dev/null \
+        | grep 'ckpt_' | sort -k2,3 | tail -1 | awk '{print $NF}'
+}
+
+checkpoint_iter() {
+    # ckpt_004000.pth -> 4000
+    sed -E 's/^ckpt_0*([0-9]+)\.pth$/\1/' <<<"$1"
+}
+
+n=0
+CURRENT_CKPT="$(latest_checkpoint)"
+if [[ -n "$CURRENT_CKPT" ]]; then
+    log "found existing checkpoint on Drive: $CURRENT_CKPT (iter $(checkpoint_iter "$CURRENT_CKPT"))"
+fi
+
+while true; do
+    n=$((n + 1))
+    SESSION="${SESSION_PREFIX}-w${n}"
+    export VESUVIUS_COLAB_SESSION="$SESSION"
+
+    log "=== attempt $n: session '$SESSION' ==="
+    if ! REPO_URL="$REPO_URL" RCLONE_CONF_LOCAL="$RCLONE_CONF_LOCAL" VESUVIUS_COLAB_GPU="$GPU" \
+        "$SCRIPT_DIR/colab_bootstrap.sh"; then
+        log "bootstrap failed for $SESSION, retrying with a new session"
+        sleep 10
+        continue
+    fi
+
+    CFG_TMP="$(mktemp /tmp/watchdog_config_XXXX.json)"
+    if [[ -n "$CURRENT_CKPT" ]]; then
+        python3 -c "
+import json, sys
+p = sys.argv[1]
+cfg = json.load(open(p))
+cfg['checkpoint'] = '$OUT_DIR_REMOTE/$CURRENT_CKPT'
+json.dump(cfg, open(sys.argv[2], 'w'), indent=2)
+" "$CONFIG_LOCAL" "$CFG_TMP"
+        log "resuming from $OUT_DIR_REMOTE/$CURRENT_CKPT"
+    else
+        cp "$CONFIG_LOCAL" "$CFG_TMP"
+        log "no checkpoint yet — starting fresh"
+    fi
+    rclone copyto --config "$RCLONE_CONF_LOCAL" "$CFG_TMP" "google_drive:vesuvius/configs/$(basename "$CONFIG_LOCAL")"
+    rm -f "$CFG_TMP"
+
+    PATCH_CMDS=""
+    for f in "${PATCH_FILES[@]}"; do
+        name="$(basename "$f")"
+        rclone copyto --config "$RCLONE_CONF_LOCAL" "$VESUVIUS_LOCAL_ROOT/$f" "google_drive:vesuvius/configs/$name"
+        PATCH_CMDS+="rclone copyto --config /root/.config/rclone/rclone.conf 'gdrive:vesuvius/configs/$name' /root/villa/vesuvius/$f
+"
+    done
+    remote_bash "
+mkdir -p /content/vesuvius_volume_cache '$(dirname "$CONFIG_REMOTE")'
+$PATCH_CMDS
+rclone copyto --config /root/.config/rclone/rclone.conf 'gdrive:vesuvius/configs/$(basename "$CONFIG_LOCAL")' '$CONFIG_REMOTE'
+echo patched
+" 120
+
+    TRAIN_LOG_REMOTE="/content/drive/vesuvius/runs/${RUN_NAME}_watchdog_attempt${n}.log"
+    remote_bash "
+export PATH=\"\$HOME/.local/bin:\$PATH\"
+export WANDB_API_KEY='${WANDB_API_KEY:-}'
+cd \$HOME/villa/vesuvius
+nohup uv run --no-sync --extra models python -m vesuvius.ink_detection.training.train '$CONFIG_REMOTE' > '$TRAIN_LOG_REMOTE' 2>&1 &
+echo launched \$!
+disown
+" 60
+    log "launched attempt $n, log at $TRAIN_LOG_REMOTE"
+
+    VOLUME_CACHE_DIR="$(python3 -c "import json,sys; print(json.load(open(sys.argv[1])).get('volume_cache_dir',''))" "$CONFIG_LOCAL")"
+    if [[ -n "$VOLUME_CACHE_DIR" ]]; then
+        launch_disk_janitor "$VOLUME_CACHE_DIR" 8
+        log "launched disk janitor for $VOLUME_CACHE_DIR (8GB safety-net cap)"
+    fi
+
+    # Poll Drive for progress; declare a stall if STALL_TIMEOUT passes with
+    # no new checkpoint (generous enough to cover normal patch-discovery
+    # startup time on a fresh session, not just steady-state step rate).
+    last_progress=$(date +%s)
+    while true; do
+        sleep "$POLL_SECONDS"
+        latest="$(latest_checkpoint)"
+        if [[ -n "$latest" && "$latest" != "$CURRENT_CKPT" ]]; then
+            CURRENT_CKPT="$latest"
+            last_progress=$(date +%s)
+            iter="$(checkpoint_iter "$CURRENT_CKPT")"
+            log "progress: $CURRENT_CKPT (iter $iter)"
+            if [[ "$iter" -ge "$TARGET_ITERATIONS" ]]; then
+                log "reached target ($iter >= $TARGET_ITERATIONS) — done."
+                exit 0
+            fi
+            continue
+        fi
+        now=$(date +%s)
+        if (( now - last_progress >= STALL_TIMEOUT )); then
+            log "no new checkpoint in ${STALL_TIMEOUT}s — treating session '$SESSION' as dead, resuming on a new one"
+            break
+        fi
+    done
+done

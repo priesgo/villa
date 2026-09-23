@@ -89,7 +89,15 @@ if [[ -f "$RCLONE_CONF_LOCAL" ]]; then
     log "pushing rclone.conf and mounting Google Drive"
     remote_bash "mkdir -p '$REMOTE_HOME/.config/rclone' && command -v rclone >/dev/null || (apt-get update -y && apt-get install -y --no-install-recommends rclone)" 300
     colab upload -s "$SESSION" "$RCLONE_CONF_LOCAL" "$REMOTE_HOME/.config/rclone/rclone.conf"
-    remote_bash "mkdir -p /content/drive && (mountpoint -q /content/drive || (rclone mount gdrive: /content/drive --vfs-cache-mode writes --daemon && sleep 3))" 60
+    # --vfs-cache-max-size/-max-age bound the local write-back cache: without
+    # them it can retain uploaded files indefinitely, and a long training run
+    # writing multi-GB checkpoints periodically can accumulate enough local
+    # disk usage to hit the VM's disk quota (observed: repeated unexplained
+    # session deaths correlated with steadily rising disk usage in W&B's
+    # system/disk./.usageGB metric). These are rclone's own supported
+    # eviction knobs — safer than deleting its cache files directly, which
+    # risks corrupting bookkeeping for an in-flight upload.
+    remote_bash "mkdir -p /content/drive && (mountpoint -q /content/drive || (rclone mount gdrive: /content/drive --vfs-cache-mode writes --vfs-cache-max-size 3G --vfs-cache-max-age 20m --daemon && sleep 3))" 60
 else
     log "no local rclone.conf at '$RCLONE_CONF_LOCAL' — skipping Drive mount."
     log "See docs/colab.md 'Mounting Google Drive' to create one, then rerun with RCLONE_CONF_LOCAL set."

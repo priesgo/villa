@@ -70,6 +70,12 @@ echo '--- first log output ---'
 tail -n 30 '$TRAIN_LOG_REMOTE' || true
 " 120
 
+VOLUME_CACHE_DIR="$(python3 -c "import json,sys; print(json.load(open(sys.argv[1])).get('volume_cache_dir',''))" "$CONFIG_LOCAL")"
+if [[ -n "$VOLUME_CACHE_DIR" ]]; then
+    launch_disk_janitor "$VOLUME_CACHE_DIR" 8
+    log "launched disk janitor for $VOLUME_CACHE_DIR (8GB safety-net cap) — see colab_lib.sh for why"
+fi
+
 log "training launched. It runs detached, so it survives this script exiting and any client-side disconnects."
 log "Tail the log:    colab exec -s $SESSION --timeout 30 <<< \"import subprocess; print(subprocess.run(['tail','-n','50','$TRAIN_LOG_REMOTE'],capture_output=True,text=True).stdout)\""
 log "Or reconnect:    colab console -s $SESSION"
