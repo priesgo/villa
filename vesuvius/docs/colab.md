@@ -262,7 +262,7 @@ Measured from inside a live Colab session (T4), reading real files from each sou
 | S3 (anonymous, direct HTTP GET) | `PHerc0139/.../ink-detection/*.tif` | 40.8 MB | 1.35s | **~30 MB/s** |
 | Google Drive (`rclone`, direct API, no FUSE mount) | segment `x.tif` | 66.7 MB | 6.07s | **~11 MB/s** |
 
-S3 was ~2.7x faster than Drive in this comparison, and both are far faster than the same reads from a residential/local-machine connection (~0.5 MB/s measured against the same files) — the point of this comparison is Colab-to-cloud-storage speed specifically, not a general claim about S3 vs. Drive.
+S3 was ~2.7x faster than Drive in this comparison — the point of this comparison is Colab-to-cloud-storage speed specifically, not a general claim about S3 vs. Drive.
 
 ### Enabling it: fully-explicit dataset entries
 
