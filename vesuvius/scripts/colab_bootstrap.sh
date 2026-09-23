@@ -191,6 +191,24 @@ echo \$jobs
     remote_bash "export PATH=\"\$HOME/.local/bin:\$PATH\"; cd '$REMOTE_HOME/villa/vesuvius' && uv pip install --python .venv/bin/python --force-reinstall --no-deps '$BUILT_WHEEL'" 300
 fi
 
+log "logging session resources (RAM, disk, GPU)"
+# Baseline visibility into what a session actually has available, taken after
+# install (so it reflects real headroom, not a pristine VM) — added after
+# repeated unexplained session deaths during a long S3-backed training run
+# whose W&B system/disk./.usageGB metric showed steady growth across each
+# run's lifetime (see docs/ink_detection.md's "Volume paths and disk cache"
+# section: volume_cache_max_gb is a per-volume budget, not a total across the
+# cache root, and independent per-worker-process accounting can overshoot it
+# before the next prune sweep — a real mechanism for the disk growth seen).
+remote_bash "
+echo '--- RAM ---'
+free -h
+echo '--- Disk (/ and /content) ---'
+df -h / /content 2>/dev/null || df -h /
+echo '--- GPU ---'
+nvidia-smi --query-gpu=name,memory.total,memory.used,memory.free --format=csv 2>/dev/null || nvidia-smi
+" 60
+
 log "verifying GPU visibility"
 # --no-sync is required here: volume-cartographer is declared as an editable
 # path dependency in pyproject.toml/uv.lock, and a plain `uv run` re-syncs
