@@ -19,7 +19,7 @@
   "num_iterations": 20000,
   "learning_rate": 0.01,
   "mixed_precision": "fp16",
-  "dataloader_workers": 2,
+  "dataloader_workers": 4,
 
   "val_every": 500,
   "save_every": 1000,
@@ -28,7 +28,7 @@
   "max_amp_overflow_events": 4,
 
   "volume_cache_dir": "/content/vesuvius_volume_cache",
-  "volume_cache_max_gb": 5,
+  "volume_cache_max_gb": 20,
 
   "datasets": [
     {
