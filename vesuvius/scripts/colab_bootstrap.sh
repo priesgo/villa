@@ -74,7 +74,14 @@ if grep -q "has no attribute 'KernelClient'" <<<"$HOME_PROBE"; then
 fi
 check_exec_rc "$HP_RC" "$HOME_PROBE" 30
 check_remote_ok "$HOME_PROBE"
-REMOTE_HOME="$HOME_PROBE"
+# google-colab-cli intermittently prepends an "[colab] A new version ..."
+# update-nag banner (and related [colab]-prefixed lines) to exec output,
+# ahead of the actual printed value. Left unfiltered, that banner text ends
+# up embedded in $REMOTE_HOME (with literal newlines), silently corrupting
+# every path built from it later (observed: a garbled multi-line path fed to
+# `colab upload`, which failed with a raw 500 rather than a clear error).
+# Strip [colab]-prefixed and blank lines; the real answer is always last.
+REMOTE_HOME="$(grep -v '^\[colab\]' <<<"$HOME_PROBE" | grep -v '^[[:space:]]*$' | tail -1)"
 REMOTE_HOME="${REMOTE_HOME//$'\r'/}"
 log "remote home: $REMOTE_HOME"
 
