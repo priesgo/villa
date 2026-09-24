@@ -104,12 +104,25 @@ while true; do
     export VESUVIUS_COLAB_SESSION="$SESSION"
 
     log "=== attempt $n: session '$SESSION' ==="
+    BOOTSTRAP_LOG="$(mktemp)"
     if ! REPO_URL="$REPO_URL" RCLONE_CONF_LOCAL="$RCLONE_CONF_LOCAL" VESUVIUS_COLAB_GPU="$GPU" \
-        "$SCRIPT_DIR/colab_bootstrap.sh"; then
-        log "bootstrap failed for $SESSION, retrying with a new session"
-        sleep 10
+        "$SCRIPT_DIR/colab_bootstrap.sh" 2>&1 | tee "$BOOTSTRAP_LOG"; then
+        # A 10s retry is fine for a one-off transient failure, but useless
+        # against TooManyAssignmentsError (the concurrent-session quota) —
+        # that won't clear in 10s, and retrying that fast just hammers the
+        # API with more session-creation requests while already over quota.
+        # Observed live: 20+ back-to-back failures in under a minute.
+        if grep -q "TooManyAssignmentsError" "$BOOTSTRAP_LOG"; then
+            log "bootstrap failed for $SESSION (concurrent-session quota) — backing off 120s"
+            sleep 120
+        else
+            log "bootstrap failed for $SESSION, retrying with a new session"
+            sleep 10
+        fi
+        rm -f "$BOOTSTRAP_LOG"
         continue
     fi
+    rm -f "$BOOTSTRAP_LOG"
 
     CFG_TMP="$(mktemp /tmp/watchdog_config_XXXX.json)"
     if [[ -n "$CURRENT_CKPT" ]]; then
