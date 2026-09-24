@@ -142,7 +142,15 @@ rclone copyto --config /root/.config/rclone/rclone.conf 'gdrive:vesuvius/configs
 echo patched
 " 120
 
-    TRAIN_LOG_REMOTE="/content/drive/vesuvius/runs/${RUN_NAME}_watchdog_attempt${n}.log"
+    # $SESSION (not just $n) must be in this path: $n resets to 1 for every
+    # fresh watchdog *instance*, so two concurrent instances' attempts can
+    # collide on the same filename. Observed live: a presumed-dead session
+    # that was actually still alive kept writing to the same
+    # ..._attempt9.log path a much later instance's attempt 9 also used,
+    # silently interleaving two unrelated training runs' log output in one
+    # file. $SESSION already embeds the instance prefix, so this is unique
+    # per attempt regardless of how many instances are running.
+    TRAIN_LOG_REMOTE="/content/drive/vesuvius/runs/${RUN_NAME}_${SESSION}.log"
     remote_bash "
 export PATH=\"\$HOME/.local/bin:\$PATH\"
 export WANDB_API_KEY='${WANDB_API_KEY:-}'
