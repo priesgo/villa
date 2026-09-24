@@ -31,7 +31,7 @@
 # All colab_bootstrap.sh env vars are passed through as-is.
 #
 # Modified source files under src/vesuvius/ink_detection/ are pushed to
-# Drive (google_drive:vesuvius/configs/<basename>.py) and pulled onto each
+# Drive (gdrive:vesuvius/configs/<basename>.py) and pulled onto each
 # fresh session — the same manual pattern used throughout this session,
 # needed because these commits are not yet pushed to the remote the session
 # clones from. Remove PATCH_FILES (or this whole block) once they are.
@@ -83,7 +83,7 @@ latest_checkpoint() {
     # real latest one (ckpt_010000.pth). An mtime sort would have handed that
     # stale, lower checkpoint back as "latest" on the next resume, silently
     # discarding 1000 real iterations of progress.
-    rclone lsf --config "$RCLONE_CONF_LOCAL" "google_drive:vesuvius/runs/$RUN_NAME/" 2>/dev/null \
+    rclone lsf --config "$RCLONE_CONF_LOCAL" "gdrive:vesuvius/runs/$RUN_NAME/" 2>/dev/null \
         | grep '^ckpt_' | sort | tail -1
 }
 
@@ -125,13 +125,13 @@ json.dump(cfg, open(sys.argv[2], 'w'), indent=2)
         cp "$CONFIG_LOCAL" "$CFG_TMP"
         log "no checkpoint yet — starting fresh"
     fi
-    rclone copyto --config "$RCLONE_CONF_LOCAL" "$CFG_TMP" "google_drive:vesuvius/configs/$(basename "$CONFIG_LOCAL")"
+    rclone copyto --config "$RCLONE_CONF_LOCAL" "$CFG_TMP" "gdrive:vesuvius/configs/$(basename "$CONFIG_LOCAL")"
     rm -f "$CFG_TMP"
 
     PATCH_CMDS=""
     for f in "${PATCH_FILES[@]}"; do
         name="$(basename "$f")"
-        rclone copyto --config "$RCLONE_CONF_LOCAL" "$VESUVIUS_LOCAL_ROOT/$f" "google_drive:vesuvius/configs/$name"
+        rclone copyto --config "$RCLONE_CONF_LOCAL" "$VESUVIUS_LOCAL_ROOT/$f" "gdrive:vesuvius/configs/$name"
         PATCH_CMDS+="rclone copyto --config /root/.config/rclone/rclone.conf 'gdrive:vesuvius/configs/$name' /root/villa/vesuvius/$f
 "
     done
