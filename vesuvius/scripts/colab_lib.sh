@@ -80,23 +80,29 @@ remote_bash() {
 # paths and disk cache") under a total size bound for as long as training
 # runs, not just at each volume's open time. Added after a long S3-backed
 # training run repeatedly died mid-run, correlated with steadily rising disk
-# usage (W&B system/disk./.usageGB) that tracked Colab's ~70-100GB session
-# disk quota. volume_cache_max_gb in the training config already bounds this
-# per-volume via zarr's own CacheStore LRU, but that budget is enforced
-# per-volume-per-process (independent accounting across dataloader workers
-# can overshoot it before the next prune sweep), so this is a coarser,
-# total-size safety net on top of it — deliberately conservative about what
-# it touches:
+# usage (W&B system/disk./.usageGB). A dedicated 15-minute diagnostic run
+# later disproved disk exhaustion as the actual cause on this VM tier (only
+# 24%->26% of a 236GB disk over the full run, ~174GB free throughout), so the
+# default here is a generous last-resort backstop, not an active space-saver
+# — the real per-volume bound is volume_cache_max_gb in the training config,
+# enforced by zarr's own CacheStore LRU.
+#
+# Caveat, not fully resolved: the safety check below assumes a file's atime
+# reflects recent reads, but this VM's root filesystem mounts with `relatime`
+# (confirmed live), which only guarantees an atime update roughly once every
+# 24h per file (or on the first read after a write) — not on every read. A
+# file read repeatedly within the same day can look "untouched" long before
+# it actually is, so -amin here is a soft signal, not a hard guarantee
+# against deleting a file an active worker is reading. Keeping the threshold
+# high (given the proven disk headroom) is the main mitigation for now.
 #   - Only ever operates inside $1 (the cache directory itself), never Drive
 #     or S3 — this cache is purely local and re-fetchable, so removing an
 #     entry just means the next read is a cache miss instead of a hit.
-#   - Only considers files with no access in the last 2 minutes (`-amin +2`),
-#     to avoid racing a read that's actively in flight.
 #   - Deletes oldest-accessed-first, stopping as soon as it's back under
 #     budget, so it never over-prunes.
 # Requires $SESSION set.
 launch_disk_janitor() {
-    local cache_dir="$1" max_gb="${2:-8}"
+    local cache_dir="$1" max_gb="${2:-100}"
     remote_bash "
 nohup bash -c '
 CACHE_DIR=\"$cache_dir\"

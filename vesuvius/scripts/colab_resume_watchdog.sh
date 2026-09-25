@@ -176,8 +176,8 @@ disown
 
     VOLUME_CACHE_DIR="$(python3 -c "import json,sys; print(json.load(open(sys.argv[1])).get('volume_cache_dir',''))" "$CONFIG_LOCAL")"
     if [[ -n "$VOLUME_CACHE_DIR" ]]; then
-        launch_disk_janitor "$VOLUME_CACHE_DIR" 8
-        log "launched disk janitor for $VOLUME_CACHE_DIR (8GB safety-net cap)"
+        launch_disk_janitor "$VOLUME_CACHE_DIR" 100
+        log "launched disk janitor for $VOLUME_CACHE_DIR (100GB safety-net cap)"
     fi
 
     # Poll Drive for progress; declare a stall if STALL_TIMEOUT passes with
